@@ -1,0 +1,40 @@
+# ─── System & IDE ───
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+
+# ─── Python ───
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+
+# ─── JavaScript (Node.js) ───
+**/node_modules/
+**/dist/
+**/build/
+.npm
+.eslintcache
+
+# ─── Project Specifics ───
+**/*.db
+**/*.sqlite3
+**/*.log
+**/*.mp4
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/models/*.onnx
+
+# ─── Environments ───
+.env
+.env.local
+.env.*.local
