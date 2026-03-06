@@ -13,6 +13,7 @@ const navItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { id: 'process', icon: UploadCloud, label: 'Process Files' },
     { id: 'violations', icon: ClipboardList, label: 'Violations Log' },
+    { id: 'wanted', icon: ShieldAlert, label: 'Wanted List' },
     { id: 'settings', icon: Settings, label: 'Settings' },
 ]
 

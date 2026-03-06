@@ -36,3 +36,23 @@ class ViolationResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}  # Pydantic v2 (replaces orm_mode)
+
+
+class WantedVehicleCreate(BaseModel):
+    plate_number: str = Field(..., min_length=1, max_length=20)
+    reason: str = Field(..., description="Reason why the vehicle is wanted")
+
+    model_config = {"json_schema_extra": {
+        "example": {
+            "plate_number": "A123BC77",
+            "reason": "Suspected of theft",
+        }
+    }}
+
+class WantedVehicleResponse(BaseModel):
+    id: str
+    plate_number: str
+    reason: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

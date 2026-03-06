@@ -19,6 +19,9 @@ from datetime import datetime, timezone
 import re
 import difflib
 from pathlib import Path
+from collections import Counter
+import os
+import time
 
 import httpx
 import numpy as np
@@ -190,15 +193,33 @@ def get_iou(box1, box2):
     return inter_area / union_area if union_area > 0 else 0
 
 def enhance_plate(img):
-    """Подготовка картинки номера для лучшего чтения EasyOCR (из твоего примера)"""
+    """Многоступенчатая бинаризация для повышения точности OCR"""
     if img is None or img.size == 0:
         return img
+    
+    # 1. Оттенки серого
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Увеличиваем разрешение в 2 раза
+    
+    # 2. Увеличение (x2) для захвата мелких пикселей
     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-    # Улучшаем локальный контраст (помогает при тенях и засветах)
+    
+    # 3. CLAHE (убирает тени и блики на металле)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    return clahe.apply(gray)
+    enhanced = clahe.apply(gray)
+    
+    # 4. Двусторонний фильтр (убирает шум, сохраняет края букв)
+    blur = cv2.bilateralFilter(enhanced, 11, 17, 17)
+    
+    # 5. Бинаризация Оцу (часто работает лучше адаптивной для крупных букв номера)
+    _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # 6. Морфологическое закрытие (соединяет разорванные пиксели в буквах)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    
+    return binary
+    
+    return binary
 
 def _filter_plate_text(text_list: list) -> str:
     """
@@ -219,17 +240,28 @@ def _filter_plate_text(text_list: list) -> str:
         
         is_garbage = any(re.search(p, orig_text, re.IGNORECASE) for p in garbage_patterns)
         
+        has_letter = any(c.isalpha() for c in clean_text)
+        
         # Valid plate candidates are usually 4-9 chars and not metadata
-        if not is_garbage and 4 <= len(clean_text) <= 10:
+        if not is_garbage and 4 <= len(clean_text) <= 10 and has_letter:
             candidates.append(clean_text)
             
     # Join candidates or return the longest one if multiple found
     if not candidates:
-        return ""
+        return "UNKNOWN"
     
     # Sort by length descending and take the longest reasonable one
     candidates.sort(key=len, reverse=True)
     return candidates[0]
+
+def correct_plate(text: str) -> str:
+    """Basic auto-correction for common OCR confusions."""
+    # This is a generic correction. In production, this would use a regex state machine
+    # tied to local license plate rules.
+    replacements = {'O': '0', 'Q': '0'}
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text
 def _generate_dummy_image_base64() -> str:
     """
     Return a tiny placeholder base64-encoded PNG (1×1 red pixel).
@@ -292,11 +324,32 @@ def _mock_detect_vehicle(frame_base64: str | None) -> dict | None:
         # Enhance image
         enhanced = enhance_plate(plate_crop)
         
-        # OCR
-        ocr_results = ocr_reader.readtext(enhanced, detail=1)
+        # --- DEBUG VISUALIZATION ---
+        # Save what EasyOCR actually sees to let the user debug
+        os.makedirs("debug_plates", exist_ok=True)
+        debug_filename = f"debug_plates/plate_{int(time.time()*1000)}.jpg"
+        cv2.imwrite(debug_filename, enhanced)
+        print(f"📸 Saved cropped & enhanced plate to: {debug_filename}")
+        # ---------------------------
+        
+        # OCR (Restrict characters to strictly alphanumeric to prevent guessing weird symbols)
+        ocr_results = ocr_reader.readtext(
+            enhanced, 
+            detail=1,
+            allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        )
         
         best_plate = ""
-        best_conf = 0.0
+        best_score = 0
+        
+        # Строгие Regex-шаблоны форматов номеров (Примеры KZ, RU, EU)
+        strict_patterns = [
+            r"^\d{3}[A-Z]{2,3}\d{2}$",     # 123 ABC 02 (KZ)
+            r"^[A-Z]\d{3}[A-Z]{2,3}$",      # A 123 BCD (KZ/RU)
+            r"^[A-Z]\d{3}[A-Z]{2}\d{2,3}$", # A 123 BC 77 (RU)
+            r"^[A-Z]{2}\d{4}[A-Z]{2}$",     # AA 1234 AA (UA, EU)
+            r"^[A-Z]{1,2}\d{3,4}[A-Z]{0,2}$" # Универсальный формат
+        ]
         
         # Filtering logic: strictly Latin, must have letter, ignore OSD
         for (_, text, prob) in ocr_results:
@@ -304,21 +357,33 @@ def _mock_detect_vehicle(frame_base64: str | None) -> dict | None:
             # Strict Latin filter
             clean_text = re.sub(r"[^A-Z0-9]", "", clean_text)
             
-            # Metadata filtering
             garbage_patterns = [r"CAMERA", r"IP", r"NVR", r"SYSTEM", r"INFO", r"\d{4}-\d{2}-\d{2}"]
             is_garbage = any(re.search(p, text, re.IGNORECASE) for p in garbage_patterns)
             
             has_letter = any(c.isalpha() for c in clean_text)
             
-            if not is_garbage and prob > 0.4 and 4 <= len(clean_text) <= 10 and has_letter:
-                # Common OCR Fixes: Standardize 0/O and 1/I confusion in numeric/alpha positions
-                # For simplicity: just replace O with 0 and I with 1 if they are likely numeric
-                # but license plates are mixed. For now, just keep the clean_text as is.
-                if len(clean_text) > len(best_plate):
+            
+            # Relaxed probability threshold because OSD filtering handles garbage naturally
+            if not is_garbage and prob > 0.25 and 4 <= len(clean_text) <= 10 and has_letter:
+                
+                # Присваиваем вес каждому распознанному тексту
+                # Если совпал строгий формат номера - добавляем +100 баллов
+                is_strict_match = any(re.match(p, clean_text) for p in strict_patterns)
+                
+                # Штрафуем результаты с низкой уверенностью, но даем шанс если формат правильный
+                current_score = len(clean_text) + (100 if is_strict_match else 0) + (prob * 10)
+                
+                print(f"   ➔ OCR Candidate: '{clean_text}' | Prob: {prob:.2f} | Strict Match: {is_strict_match} | Final Score: {current_score:.2f}")
+                
+                if current_score > best_score:
                     best_plate = clean_text
-                    best_conf = prob
+                    best_score = current_score
+            else:
+                 print(f"   ❌ Rejected OCR: '{text}' (Garbage: {is_garbage}, Prob: {prob:.2f}, Len: {len(clean_text)}, HasLetter: {has_letter})")
 
         plate_text = best_plate if best_plate else "UNKNOWN"
+        print(f"✅ WINNER: {plate_text} (Score: {best_score:.2f})")
+
         
         return {
             "plate_number": plate_text,
@@ -412,6 +477,10 @@ async def process_file(file: UploadFile = File(...)):
                     outputs = yolo_session.run(None, {"images": blob})
                     boxes, scores, class_ids = postprocess_yolo(outputs, vid_frame.shape)
                     
+                    # 1. Reset 'updated' flag for all tracks
+                    for track in active_tracks:
+                        track['updated_this_frame'] = False
+
                     for i, box in enumerate(boxes):
                         x1, y1, x2, y2 = map(int, box)
                         score = scores[i]
@@ -421,52 +490,92 @@ async def process_file(file: UploadFile = File(...)):
                         if center_y < osd_margin or center_y > (h_vid - osd_margin):
                             continue
                         
-                        # Match with active tracks
+                        # Match with active tracks: Find BEST IOU
+                        best_iou = 0.3
                         matched_track = None
+                        
                         for track in active_tracks:
-                            if get_iou(box, track['last_box']) > 0.3:
+                            # Skip if already assigned in this frame or track is lost/old
+                            if track.get('updated_this_frame', False) or track.get('frames_since_update', 0) > 15:
+                                continue
+                            
+                            iou = get_iou(box, track['last_box'])
+                            if iou > best_iou:
+                                best_iou = iou
                                 matched_track = track
-                                break
+                        
+                        _, buffer = cv2.imencode(".jpg", vid_frame)
+                        b64 = base64.b64encode(buffer).decode("utf-8")
                         
                         if matched_track:
-                            # Update existing track with a better frame if found
+                            # Update existing track
                             matched_track['last_box'] = box
+                            matched_track['updated_this_frame'] = True
+                            matched_track['frames_since_update'] = 0
+                            
                             if score > matched_track['best_score']:
-                                _, buffer = cv2.imencode(".jpg", vid_frame)
-                                matched_track['best_frame_b64'] = base64.b64encode(buffer).decode("utf-8")
+                                matched_track['best_frame_b64'] = b64
                                 matched_track['best_score'] = score
+                            
+                            matched_track['frames'].append((score, b64))
+                            # Keep top 5 frames
+                            matched_track['frames'] = sorted(matched_track['frames'], key=lambda x: x[0], reverse=True)[:5]
                         else:
                             # New vehicle detected
-                            _, buffer = cv2.imencode(".jpg", vid_frame)
                             active_tracks.append({
                                 'best_score': score,
-                                'best_frame_b64': base64.b64encode(buffer).decode("utf-8"),
-                                'last_box': box
+                                'best_frame_b64': b64,
+                                'last_box': box,
+                                'frames': [(score, b64)],
+                                'updated_this_frame': True,
+                                'frames_since_update': 0
                             })
+                            
+                    # 2. Increment age for unmatched tracks
+                    for track in active_tracks:
+                        if not track.get('updated_this_frame', False):
+                            track['frames_since_update'] = track.get('frames_since_update', 0) + 1
+                            
                 frame_idx += 1
             cap.release()
 
-            # Now run OCR ONLY on the best frame of each unique track
-            # This is MUCH faster and more accurate than OCRing every frame
+            # Now run OCR on the TOP 5 frames of each unique track -> Majority Voting
+            # This massively improves accuracy and ignores glitches on single frames.
             detections_list = []
             final_found_plates = set()
             
-            print(f"🎯 Found {len(active_tracks)} vehicle candidates. Running OCR on best frames...")
+            print(f"🎯 Found {len(active_tracks)} vehicle candidates. Running OCR Voting...")
             for track in active_tracks:
-                det = _mock_detect_vehicle(track['best_frame_b64'])
-                if det and det["plate_number"] != "UNKNOWN":
-                    plate = det["plate_number"]
+                plate_votes = []
+                last_valid_det = None
+                
+                # Vote across top saved frames
+                for _, f_b64 in track['frames']:
+                    det = _mock_detect_vehicle(f_b64)
+                    if det and det["plate_number"] != "UNKNOWN":
+                        plate_votes.append(det["plate_number"])
+                        # Save the first non-unknown det to use its cropped image and speed
+                        if not last_valid_det:
+                            last_valid_det = det
+                
+                if plate_votes and last_valid_det:
+                    # Majority vote
+                    best_plate_voted = Counter(plate_votes).most_common(1)[0][0]
+                    # Apply auto-correction fixes (e.g. O -> 0)
+                    best_plate_voted = correct_plate(best_plate_voted)
+                    
+                    last_valid_det["plate_number"] = best_plate_voted
                     
                     # deduplicate similar plates (fuzzy match)
                     is_dup = False
                     for seen in final_found_plates:
-                        if difflib.SequenceMatcher(None, plate, seen).ratio() > 0.7:
+                        if difflib.SequenceMatcher(None, best_plate_voted, seen).ratio() > 0.7:
                             is_dup = True
                             break
                     
                     if not is_dup:
-                        final_found_plates.add(plate)
-                        detections_list.append(det)
+                        final_found_plates.add(best_plate_voted)
+                        detections_list.append(last_valid_det)
 
         # Final results
         if not detections_list:

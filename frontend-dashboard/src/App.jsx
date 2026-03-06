@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { Clock } from 'lucide-react'
 import Sidebar from './components/Sidebar'
 import ViolationsTable from './components/ViolationsTable'
 import {
@@ -11,6 +12,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  Trash2,
+  Plus
 } from 'lucide-react'
 
 // ─── Stat Card (used in Dashboard view) ────────────────────────────────────
@@ -92,12 +95,26 @@ function ProcessPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [elapsedTime, setElapsedTime] = useState(0)
+
+  useEffect(() => {
+    let interval;
+    if (loading) {
+      interval = setInterval(() => {
+        setElapsedTime((prev) => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(interval);
+    }
+    return () => clearInterval(interval);
+  }, [loading]);
 
   const handleUpload = async (e) => {
     e.preventDefault()
     if (!file) return
 
     setLoading(true)
+    setElapsedTime(0)
     setResult(null)
     setError(null)
 
@@ -190,6 +207,31 @@ function ProcessPage() {
           )}
         </button>
 
+        {loading && (
+          <div className="w-full max-w-md flex flex-col gap-2 mt-2">
+            <div className="flex justify-between items-center text-xs" style={{ color: 'var(--text-muted)' }}>
+              <span className="flex items-center gap-1 font-semibold">
+                <Loader2 size={12} className="animate-spin" />
+                {file?.type?.includes('video') ? "Analyzing video frames (GPU)..." : "Processing image (GPU)..."}
+              </span>
+              <span className="flex items-center gap-1 font-mono font-bold text-indigo-400">
+                <Clock size={12} /> {elapsedTime}s
+              </span>
+            </div>
+
+            <div className="w-full h-1.5 rounded-full overflow-hidden relative" style={{ background: 'var(--bg-primary)' }}>
+              {/* Indeterminate pulsing bar */}
+              <div
+                className="absolute top-0 left-0 h-full rounded-full animate-pulse transition-all duration-1000 ease-out"
+                style={{
+                  width: `${Math.min((elapsedTime / (file?.type?.includes('video') ? 25 : 5)) * 100, 95)}%`,
+                  background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary))'
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="flex items-center gap-3 p-4 rounded-xl w-full max-w-md" style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)' }}>
             <AlertCircle size={20} color="#ef4444" />
@@ -203,7 +245,10 @@ function ProcessPage() {
               <CheckCircle2 size={24} className="text-emerald-500" />
               <div>
                 <p className="text-sm font-bold text-white uppercase tracking-widest">Detection Successful</p>
-                <p className="text-[10px] text-emerald-400 font-medium">Recorded {result.count || 1} unique vehicle(s)</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-[10px] text-emerald-400 font-medium">Recorded {result.count || 1} unique vehicle(s)</p>
+                  <span className="text-[10px] text-emerald-500 font-mono italic">in {elapsedTime}s</span>
+                </div>
               </div>
             </div>
 
@@ -257,6 +302,163 @@ function ViolationsPage() {
         </p>
       </div>
       <ViolationsTable />
+    </div>
+  )
+}
+
+// ─── Page: Wanted List ────────────────────────────────────────────────────────
+function WantedPage() {
+  const [wantedList, setWantedList] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [newPlate, setNewPlate] = useState('')
+  const [newReason, setNewReason] = useState('')
+  const [error, setError] = useState(null)
+  const [success, setSuccess] = useState(null)
+
+  const fetchWanted = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/wanted')
+      const data = await res.json()
+      setWantedList(data)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchWanted()
+  }, [])
+
+  const handleAdd = async (e) => {
+    e.preventDefault()
+    setError(null)
+    setSuccess(null)
+    if (!newPlate.trim() || !newReason.trim()) return
+
+    try {
+      const resp = await fetch('http://127.0.0.1:8000/api/wanted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          plate_number: newPlate.trim(),
+          reason: newReason.trim(),
+        })
+      })
+      if (!resp.ok) {
+        const d = await resp.json()
+        throw new Error(d.detail || 'Failed to add record')
+      }
+      setSuccess('Vehicle added to wanted list!')
+      setNewPlate('')
+      setNewReason('')
+      fetchWanted()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const handleRemove = async (plate) => {
+    if (!window.confirm(`Remove ${plate} from wanted list?`)) return
+    try {
+      const resp = await fetch(`http://127.0.0.1:8000/api/wanted/${plate}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error('Delete failed')
+      fetchWanted()
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-auto flex flex-col gap-6" style={{ padding: '24px' }}>
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight text-red-500">
+          Wanted List
+        </h1>
+        <p className="text-sm mt-1" style={{ color: 'var(--text-muted)' }}>
+          Vehicles matching this list will trigger a high-priority alarm and Telegram notification
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-6">
+        <div className="glass-card rounded-2xl p-6 h-fit md:col-span-1">
+          <h2 className="text-lg font-bold mb-4" style={{ color: 'var(--text-primary)' }}>Add New Target</h2>
+          <form onSubmit={handleAdd} className="flex flex-col gap-4">
+            <div>
+              <label className="text-xs font-semibold mb-1 block" style={{ color: 'var(--text-secondary)' }}>Plate Number</label>
+              <input
+                type="text"
+                placeholder="e.g. A123BC77"
+                value={newPlate}
+                onChange={e => setNewPlate(e.target.value.toUpperCase())}
+                className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors uppercase"
+                required
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold mb-1 block" style={{ color: 'var(--text-secondary)' }}>Reason</label>
+              <input
+                type="text"
+                placeholder="e.g. Suspected in hit and run"
+                value={newReason}
+                onChange={e => setNewReason(e.target.value)}
+                className="w-full bg-slate-900/50 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500 transition-colors"
+                required
+              />
+            </div>
+            {error && <p className="text-xs text-red-400">{error}</p>}
+            {success && <p className="text-xs text-emerald-400">{success}</p>}
+            <button
+              type="submit"
+              className="flex justify-center items-center gap-2 w-full mt-2 bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-xl transition-colors"
+            >
+              <Plus size={16} /> Add to Watchlist
+            </button>
+          </form>
+        </div>
+
+        <div className="glass-card rounded-2xl overflow-hidden md:col-span-2">
+          {loading ? (
+            <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-indigo-500" /></div>
+          ) : wantedList.length === 0 ? (
+            <div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>
+              No vehicles currently on the watchlist.
+            </div>
+          ) : (
+            <div className="w-full overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr style={{ background: 'rgba(0,0,0,0.2)', color: 'var(--text-secondary)' }} className="text-xs uppercase tracking-wider">
+                    <th className="py-3 px-6 font-medium">Plate Number</th>
+                    <th className="py-3 px-6 font-medium">Reason</th>
+                    <th className="py-3 px-6 font-medium">Added On</th>
+                    <th className="py-3 px-6 font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="text-sm">
+                  {wantedList.map((veh) => (
+                    <tr key={veh.id} className="border-t border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                      <td className="py-3 px-6 font-bold text-red-400 tracking-wider font-mono">{veh.plate_number}</td>
+                      <td className="py-3 px-6 text-slate-300">{veh.reason}</td>
+                      <td className="py-3 px-6 text-slate-400 text-xs">{new Date(veh.created_at).toLocaleString()}</td>
+                      <td className="py-3 px-6">
+                        <button
+                          onClick={() => handleRemove(veh.plate_number)}
+                          className="text-slate-500 hover:text-red-400 transition-colors"
+                          title="Remove from list"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -338,6 +540,7 @@ export default function App() {
             {activePage === 'dashboard' && '🏠 Overview'}
             {activePage === 'process' && '☁️ Process Media'}
             {activePage === 'violations' && '🚨 Violations Log'}
+            {activePage === 'wanted' && '🎯 Wanted List'}
             {activePage === 'settings' && '⚙️ Settings'}
           </p>
           <div className="flex items-center gap-2">
@@ -353,6 +556,7 @@ export default function App() {
         {activePage === 'dashboard' && <DashboardPage onNavigate={setActivePage} />}
         {activePage === 'process' && <ProcessPage />}
         {activePage === 'violations' && <ViolationsPage />}
+        {activePage === 'wanted' && <WantedPage />}
         {activePage === 'settings' && <SettingsPage />}
       </main>
     </div>

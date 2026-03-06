@@ -17,17 +17,20 @@ The project is built using a modern microservices architecture:
 ## 🚀 Key Features
 
 *   **GPU Accelerated Inference**: Powered by NVIDIA CUDA/TensorRT for real-time video processing.
-*   **Video Frame Analysis**: Scans up to 20 seconds of video to find the clearest license plate.
-*   **Fuzzy Deduplication**: Prevents recording the same car multiple times using similarity scoring (SequenceMatcher).
-*   **OSD Exclusion**: Automatically ignores camera metadata (timestamps, IP names) based on frame position and regex filtering.
-*   **Premium UI**: Dark-mode dashboard with real-time polling and interactive violation logs.
+*   **Advanced Multi-Car Tracking**: Implements IoU-based track matching with identity persistence and track aging to reliably follow multiple vehicles simultaneously without overwriting data.
+*   **Multi-Stage OCR Preprocessing**: Uses CLAHE, Bilateral Filtering, and Otsu's Thresholding with Morphological Closing to enhance blurry, shadowed, or dirty license plates before they reach the OCR engine.
+*   **Smart Majority Voting**: Analyzes the top 5 clearest frames of a video per tracked vehicle and uses regex-based strict format matching and probability scoring to prevent guessing OSD or garbage text.
+*   **Telegram Bot Alerts 🚨**: Instantly dispatches a Telegram notification with a cropped photo of the vehicle and its scanned plate number upon detection.
+*   **Wanted Watchlist**: Users can maintain a database of "Wanted" vehicles. If a match is detected, the system triggers a high-priority alarm through the Telegram Bot.
+*   **Transparent Debug Mode**: Automatically saves intermediate clean OCR images to disk and explicitly logs the scoring logic in the terminal to help users debug false positives.
+*   **Premium UI**: Dark-mode React dashboard with real-time polling, interactive violation logs, and a dedicated Wanted List manager.
 
 ---
 
 ## 🛠️ Technology Stack
 
 *   **Frontend**: React, Tailwind CSS, Lucide Icons, Vite.
-*   **Backend**: Python, FastAPI, SQLAlchemy, SQLite.
+*   **Backend**: Python, FastAPI, SQLAlchemy, SQLite, `httpx` (Telegram API).
 *   **AI/ML**: YOLOv8 (ONNX), EasyOCR, OpenCV, NumPy, CUDA.
 
 ---
@@ -44,6 +47,7 @@ The project is built using a modern microservices architecture:
 Open three separate terminals and run the following in order:
 
 #### Terminal A: Backend Service (Port 8000)
+> **Note:** Edit `TG_BOT_TOKEN` and `TG_CHAT_ID` inside `backend-service/main.py` (or inject via `.env`) to receive Telegram alerts!
 ```powershell
 cd backend-service
 python -m venv venv
@@ -78,6 +82,7 @@ npm run dev -- --port 5174
 1.  **Dashboard**: Open [http://localhost:5174](http://localhost:5174) to see the live summary.
 2.  **Process Media**: Go to the "Process Files" page in the sidebar to upload `.jpg`, `.png`, or `.mp4` files for analysis.
 3.  **Logs**: View the "Violations Log" to see all recorded entries. Click on any row to view the full details and the vehicle photo.
+4.  **Wanted List**: Use the "Wanted List" sidebar tab to add license plates you wish to actively monitor for high-priority Telegram alarms.
 
 ---
 

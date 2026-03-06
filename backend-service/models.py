@@ -36,3 +36,26 @@ class Violation(Base):
             f"<Violation id={self.id!r} plate={self.plate_number!r} "
             f"type={self.violation_type!r} speed={self.speed}>"
         )
+
+
+class WantedVehicle(Base):
+    """Represents a vehicle currently wanted by security/police."""
+
+    __tablename__ = "wanted_vehicles"
+
+    id = Column(
+        String,
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+        index=True,
+    )
+    plate_number = Column(String, nullable=False, unique=True, index=True)
+    reason = Column(String, nullable=False)
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return f"<WantedVehicle plate={self.plate_number!r} reason={self.reason!r}>"
